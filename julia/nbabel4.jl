@@ -32,8 +32,11 @@ function NBabel(fname::String; tend = tend, dt = dt, show=false)
 end
 
 function NBabelCalcs(ID, mass, pos, vel, tend = tend, dt = dt, show=false)
+    k = Threads.nthreads()
+    splits = splitter(size(pos, 1), k)
+    accs = [similar(vel) for _ in 1:k]
     acc = similar(vel)
-    acc = compute_acceleration(pos, mass, acc)
+    acc = compute_acceleration(pos, mass, acc, splits, accs)
     last_acc = copy(acc)
 
     Ekin, Epot = compute_energy(pos, vel, mass)
@@ -48,7 +51,7 @@ function NBabelCalcs(ID, mass, pos, vel, tend = tend, dt = dt, show=false)
 
         acc, last_acc = last_acc, acc
 
-        acc = compute_acceleration(pos, mass, acc)
+        acc = compute_acceleration(pos, mass, acc, splits, accs)
 
         vel = update_velocities(vel, acc, last_acc, dt)
         
@@ -94,13 +97,18 @@ end
 """
 Force calculation.
 """
-function compute_acceleration(pos, mass, acc)
+function splitter(n, k)
+    xz = [0; reverse([Int(ceil(n*(1 - sqrt(i/k)))) for i in 1:k-1]); n]
+    return [xz[i]+1:xz[i+1] for i in 1:k]
+end
+
+function chunk_compute_acceleration(r, pos, mass, acc)
     N = length(pos)
     @inbounds for i in 1:N
         acc[i] = (0.0, 0.0, 0.0, 0.0)
     end
 
-    @inbounds for i in 1:N
+    @inbounds for i in r
 
         pos_i = pos[i]
         m_i = mass[i]
@@ -113,6 +121,28 @@ function compute_acceleration(pos, mass, acc)
 
             acc[i] = @. acc[i] - mass[j] * dr
             acc[j] = @. acc[j] + m_i * dr
+        end
+    end
+
+    return acc
+end
+
+function compute_acceleration(pos, mass, acc, splits, accs)
+    k = Threads.nthreads()
+    tasks = Vector{Task}(undef, k - 1)
+    for i in 1:k-1
+        tasks[i] = @Threads.spawn chunk_compute_acceleration(splits[i], pos, mass, accs[i])
+    end
+    chunk_compute_acceleration(splits[end], pos, mass, accs[end])
+    for i in 1:k-1
+        wait(tasks[i])
+    end
+
+    acc .= accs[1]
+    @inbounds @simd for i in 2:k
+        accs_i = accs[i]
+        for j in eachindex(acc)
+            acc[j] = acc[j] .+ accs_i[j]
         end
     end
 
