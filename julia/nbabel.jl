@@ -62,7 +62,10 @@ function NBabel(fname::String; tend = 10.0, show=false)
         end
     end
 
-    return size(pos,1)
+    Ekin, Epot = compute_energy(pos, vel, mass)
+    Etot = Ekin + Epot
+    return(; Ekin, Epot, Etot)
+    # return size(pos,1)
 end
 
 function update_positions(pos::Array{Float64,2}, vel::Array{Float64,2},
